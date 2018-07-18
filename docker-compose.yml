@@ -1,0 +1,55 @@
+version: '3.3'
+
+services:
+  traefik:
+    image: traefik:1.6.5-alpine
+    command: --docker --docker.swarmMode --docker.domain=traefik --docker.watch --api --logLevel=DEBUG --traefikLog.filePath=/mnt/traefik.log --traefikLog.format=json
+    networks:
+      - traefik-net
+    ports:
+      - "80:80"
+      - "8080:8080"
+    deploy:
+      mode: global
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /mnt/traefik:/mnt:rw
+
+  app:
+    image: app
+    environment:
+      - REDIS_HOST=redis
+    networks:
+      - traefik-net
+    deploy:
+      labels:
+        - "traefik.enable=true"
+        - "traefik.backend=app"
+        - "traefik.backend.healthcheck.path=/status"
+        - "traefik.backend.healthcheck.interval=2s"
+        - "traefik.docker.network=meli_traefik-net"
+        - "traefik.frontend.entryPoints=http"
+        - "traefik.frontend.rule=Host:apimeli.org"
+        - "traefik.port=1323"
+      replicas: 2
+      placement:
+        preferences:
+          - spread: node.labels.dc
+
+  redis:
+    command: redis-server /redis.conf
+    image: redislabs/rejson
+    networks:
+      - traefik-net
+    deploy:
+      replicas: 2
+      placement:
+        preferences:
+          - spread: node.labels.dc
+    volumes:
+      - /mnt/redis/redis.conf:/redis.conf:ro
+      - /mnt/redis:/data:rw
+
+networks:
+  traefik-net:
+    driver: overlay

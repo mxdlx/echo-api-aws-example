@@ -1,0 +1,255 @@
+AWSTemplateFormatVersion: 2010-09-09
+Mappings:
+    SubnetConfig:
+      VPC:
+        CIDR: "10.0.0.0/16"
+      Private:
+        CIDR: "10.0.1.0/24"
+
+Parameters:
+  KeyPairName:
+    Type: String
+    Description: "SSH key pair name in AWS"
+
+Resources:
+  VPC:
+    Type: "AWS::EC2::VPC"
+    Properties:
+      EnableDnsSupport: "true"
+      EnableDnsHostnames: "true"
+      CidrBlock:
+        Fn::FindInMap:
+          - "SubnetConfig"
+          - "VPC"
+          - "CIDR"
+
+  PrivateSubnet:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock:
+        Fn::FindInMap:
+          - "SubnetConfig"
+          - "Private"
+          - "CIDR"
+
+  PrivateRouteTable:
+    Type: "AWS::EC2::RouteTable"
+    Properties:
+      VpcId: !Ref VPC
+
+  PrivateSubnetRouteTableAssociation:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+      SubnetId: !Ref PrivateSubnet
+      RouteTableId: !Ref PrivateRouteTable
+
+  InternetGateway:
+    Type: "AWS::EC2::InternetGateway"
+
+  IGWAttachment:
+    Type: "AWS::EC2::VPCGatewayAttachment"
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  InternetRoute:
+    Type: "AWS::EC2::Route"
+    DependsOn: IGWAttachment
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: "0.0.0.0/0"
+      GatewayId: !Ref InternetGateway
+
+  EC2I4RZA6:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      InstanceType: 't2.micro'
+      ImageId: 'ami-ae0f36cb'
+      KeyName: !Ref KeyPairName
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: "true"
+          PrivateIpAddress: "10.0.1.100"
+          DeviceIndex: "0"
+          SubnetId: !Ref PrivateSubnet
+          GroupSet:
+            - !Ref SGBASIC
+            - !Ref SGWEB
+
+  EC2I80L5:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      InstanceType: 't2.micro'
+      ImageId: 'ami-ae0f36cb'
+      KeyName: !Ref KeyPairName
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: "true"
+          PrivateIpAddress: "10.0.1.200"
+          DeviceIndex: "0"
+          SubnetId: !Ref PrivateSubnet
+          GroupSet:
+            - !Ref SGBASIC
+            - !Ref SGWEB
+
+  EFSFSEQKW:
+    Type: 'AWS::EFS::FileSystem'
+    Properties: {}
+
+  EFSMT:
+    Type: "AWS::EFS::MountTarget"
+    Properties:
+      FileSystemId: !Ref EFSFSEQKW
+      IpAddress: "10.0.1.254"
+      SubnetId: !Ref PrivateSubnet
+      SecurityGroups:
+        - !Ref SGEFS
+
+  SGBASIC:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: "SG basico para las instancias EC2"
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: "tcp"
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: "0.0.0.0/0"
+        - IpProtocol: "-1"
+          FromPort: '-1'
+          ToPort: '-1'
+          CidrIp: "10.0.1.0/24"
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          FromPort: '-1'
+          ToPort: '-1'
+          CidrIp: "0.0.0.0/0"
+
+  SGWEB:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: "SG para acceso web a las instancias EC2"
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: "tcp"
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: "0.0.0.0/0"
+
+  SGEFS:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: "SG para EFS"
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: "-1"
+          FromPort: '-1'
+          ToPort: '-1'
+          CidrIp: "10.0.1.0/24"
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          FromPort: '-1'
+          ToPort: '-1'
+          CidrIp: "10.0.1.0/24"
+
+  ACLVPC:
+    Type: "AWS::EC2::NetworkAcl"
+    Properties:
+      VpcId: !Ref VPC
+
+  ACLINWEB:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      NetworkAclId: !Ref ACLVPC
+      RuleNumber: '10'
+      Egress: 'false'
+      Protocol: "6"
+      PortRange:
+        From: '80'
+        To: '80'
+      CidrBlock: "0.0.0.0/0"
+      RuleAction: allow
+
+  ACLINSSH:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      NetworkAclId: !Ref ACLVPC
+      RuleNumber: '20'
+      Egress: 'false'
+      Protocol: "6"
+      PortRange:
+        From: '22'
+        To: '22'
+      CidrBlock: "0.0.0.0/0"
+      RuleAction: allow
+
+  ACLINEPH:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      NetworkAclId: !Ref ACLVPC
+      RuleNumber: '30'
+      Egress: 'false'
+      Protocol: "6"
+      PortRange:
+        From: '32768'
+        To: '65535'
+      CidrBlock: "0.0.0.0/0"
+      RuleAction: allow
+
+  ACLINDENY:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      NetworkAclId: !Ref ACLVPC
+      RuleNumber: '9000'
+      Egress: 'false'
+      Protocol: "-1"
+      CidrBlock: "0.0.0.0/0"
+      RuleAction: deny
+
+  ACLOUTHTTP:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      NetworkAclId: !Ref ACLVPC
+      RuleNumber: '10'
+      Egress: 'true'
+      Protocol: "6"
+      PortRange:
+        From: '80'
+        To: '80'
+      CidrBlock: "0.0.0.0/0"
+      RuleAction: allow
+
+  ACLOUTHTTPS:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      NetworkAclId: !Ref ACLVPC
+      RuleNumber: '20'
+      Egress: 'true'
+      Protocol: "6"
+      PortRange:
+        From: '443'
+        To: '443'
+      CidrBlock: "0.0.0.0/0"
+      RuleAction: allow
+
+  ACLOUTEPH:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      NetworkAclId: !Ref ACLVPC
+      RuleNumber: '30'
+      Egress: 'true'
+      Protocol: "6"
+      PortRange:
+        From: '32768'
+        To: '65535'
+      CidrBlock: "0.0.0.0/0"
+      RuleAction: allow
+
+  ACLOUTDENY:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      NetworkAclId: !Ref ACLVPC
+      RuleNumber: '9000'
+      Egress: 'true'
+      Protocol: "-1"
+      CidrBlock: "0.0.0.0/0"
+      RuleAction: deny

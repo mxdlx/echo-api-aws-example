@@ -1,0 +1,139 @@
+---
+- hosts: aws
+  tasks:
+    - name: "Install Docker"
+      yum:
+        name: docker
+        state: present
+        update_cache: true
+      become: true
+
+    - name: "Start Docker Service"
+      service:
+        name: docker
+        state: started
+        enabled: true
+      become: true
+
+    - name: "Install docker-compose"
+      get_url:
+        url: "https://github.com/docker/compose/releases/download/1.21.2/docker-compose-Linux-x86_64"
+        dest: /usr/bin/docker-compose
+        mode: 0755
+      become: true
+
+    - name: "Pull Docker Images to save time"
+      shell: "docker pull {{ item }}"
+      with_items:
+        - "traefik:1.6.5-alpine"
+        - "golang:1.10-alpine"
+        - "redislabs/rejson"
+      become: true
+
+    - name: "Leave swarm in case this is not the first run"
+      shell: "docker swarm leave -f"
+      become: true
+      ignore_errors: true
+
+    - block:
+      - name: "[MANAGER] Init docker swarm"
+        shell: "docker swarm init --advertise-addr 10.0.1.100"
+
+      - name: "[MANAGER] Get NodeID"
+        shell: "docker info | grep NodeID | awk '{ print $2 }'"
+        register: manager_id_cmd
+
+      - name: "[MANAGER] Tag node"
+        shell: "docker node update --label-add dc={{ inventory_hostname }} {{ manager_id_cmd.stdout }}"
+
+      - name: "[MANAGER] Get manager token"
+        shell: "docker swarm join-token manager -q"
+        register: manager_token_cmd
+
+      - name: "[MANAGER] Write manager token to file"
+        local_action:
+          module: lineinfile
+          create: true
+          line: "{{ manager_token_cmd.stdout }}"
+          state: present
+          path: /tmp/manager_token
+        become: false
+
+      become: true
+      when: inventory_hostname == "inst0"
+
+    - block:
+      - name: "[SUBMANAGER] Get manager token from file"
+        local_action: command cat /tmp/manager_token
+        register: manager_token_cmd
+        become: false
+
+      - name: "[SUBMANAGER] Delete manager token file"
+        local_action:
+          module: file
+          state: absent
+          path: /tmp/manager_token
+        become: false
+
+      - name: "[SUBMANAGER] Join swarm"
+        shell: "docker swarm join --token {{ manager_token_cmd.stdout }} 10.0.1.100:2377"
+
+      - name: "[SUBMANAGER] Get NodeID"
+        shell: "docker info | grep NodeID | awk '{ print $2 }'"
+        register: submanager_node_id
+
+      - name: "[SUBMANAGER] Tag node"
+        shell: "docker node update --label-add dc={{ inventory_hostname }} {{ submanager_node_id.stdout }}"
+
+      become: true
+      when: inventory_hostname == "inst1"
+
+    - name: "Mount EFS"
+      mount:
+        fstype: nfs4
+        opts: "nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2"
+        path: /mnt
+        src: "10.0.1.254:/"
+        state: mounted
+      become: true
+
+    - block:
+      - name: "Create Docker volume directories"
+        file:
+          state: directory
+          path: "/mnt/{{ item }}"
+          mode: 0755
+        with_items:
+          - deploy
+          - traefik
+          - redis
+
+      - name: "Copy Docker related files"
+        copy:
+          src: "./{{ item }}"
+          dest: "/mnt/deploy/{{ item }}"
+        with_items:
+          - Dockerfile
+          - server.go
+          - docker-compose.yml
+
+      - name: "Copy redis.conf"
+        copy:
+          src: "./redis.conf"
+          dest: "/mnt/redis/redis.conf"
+
+      become: true
+      when: inventory_hostname == "inst0"
+
+    - name: "Build app container"
+      shell: "docker build -t app ."
+      args:
+        chdir: /mnt/deploy
+      become: true
+
+    - name: "Start deploy"
+      shell: "docker stack deploy --compose-file docker-compose.yml meli"
+      args:
+        chdir: /mnt/deploy
+      become: true
+      when: inventory_hostname == "inst0"
